@@ -1,132 +1,167 @@
 """
-LinkedIn Data Extractor - No defaults, pure API data
+Apify LinkedIn Extractor (Profile + Recent Posts + Activity Days)
+
+This module:
+1) Extracts LinkedIn profile data using Apify actor
+2) Extracts recent posts using Apify posts actor
+3) Computes activity_days from most recent post timestamp
+4) Adds activity_days + recent_posts into profile response
 """
 
 import requests
-import time
-from typing import Dict, Optional, List
 from datetime import datetime
+from typing import Optional, Dict, Any, List
+
 
 class LinkedInAPIExtractor:
-    """Extracts LinkedIn data directly from Apify API."""
-    
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, debug: bool = False):
         self.api_key = api_key
+        self.debug = debug
+
+        # Actor IDs
+        self.profile_actor = "apimaestro~linkedin-profile-detail"
+        self.posts_actor = "apimaestro~linkedin-batch-profile-posts-scraper"
+
         self.base_url = "https://api.apify.com/v2"
-        self.actor_id = "apimaestro~linkedin-profile-detail"
-    
-    def extract_profile(self, linkedin_url: str) -> Optional[Dict]:
+
+    # -----------------------------
+    # Public Main Function
+    # -----------------------------
+    def extract_profile(self, linkedin_url: str, posts_limit: int = 2) -> Optional[Dict[str, Any]]:
         """
-        Extract LinkedIn profile data.
-        Returns None if extraction fails.
+        Extract full LinkedIn profile + recent posts + activity_days
+        """
+        if not linkedin_url:
+            return None
+
+        profile_data = self._fetch_profile_detail(linkedin_url)
+        if not profile_data:
+            return None
+
+        # Extract recent posts
+        recent_posts = self._fetch_recent_posts(linkedin_url, limit=posts_limit)
+
+        # Compute activity_days from posts
+        activity_days = self._compute_activity_days(recent_posts)
+
+        # Attach to profile output (dynamic)
+        profile_data["recent_posts"] = recent_posts
+        profile_data["activity_days"] = activity_days if activity_days is not None else None
+
+        if self.debug:
+            print("\n=========== DEBUG: Apify Extractor ===========")
+            print("LinkedIn URL:", linkedin_url)
+            print("Posts fetched:", len(recent_posts))
+            print("Computed activity_days:", activity_days)
+            print("============================================\n")
+
+        return profile_data
+
+    # -----------------------------
+    # Profile Detail Extraction
+    # -----------------------------
+    def _fetch_profile_detail(self, linkedin_url: str) -> Optional[Dict[str, Any]]:
+        """
+        Uses Apify profile actor: apimaestro~linkedin-profile-detail
         """
         try:
-            # Start Apify run
-            run_id = self._start_run(linkedin_url)
-            if not run_id:
+            endpoint = f"{self.base_url}/acts/{self.profile_actor}/run-sync-get-dataset-items?token={self.api_key}"
+
+            payload = {
+                "username": linkedin_url.strip(),
+                "includeEmail": False
+            }
+
+            headers = {"Content-Type": "application/json"}
+
+            resp = requests.post(endpoint, json=payload, headers=headers, timeout=120)
+
+            if resp.status_code not in (200, 201):
+                if self.debug:
+                    print("Profile actor failed:", resp.status_code, resp.text[:300])
                 return None
-            
-            # Wait for completion
-            data = self._wait_for_results(run_id)
-            return data
-            
+
+            data = resp.json()
+
+            # Apify returns list of items
+            if isinstance(data, list) and len(data) > 0:
+                return data[0]
+
+            # Some actors return dict
+            if isinstance(data, dict):
+                return data
+
+            return None
+
         except Exception as e:
-            print(f"Extraction error: {e}")
+            if self.debug:
+                print("Profile extraction error:", str(e))
             return None
-    
-    def _start_run(self, linkedin_url: str) -> Optional[str]:
-        """Start Apify actor run."""
-        endpoint = f"{self.base_url}/acts/{self.actor_id}/runs"
-        
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-        
-        # Extract username
-        username = self._extract_username(linkedin_url)
-        if not username:
-            return None
-        
-        payload = {
-            "username": username,
-            "includeEmail": False
-        }
-        
+
+    # -----------------------------
+    # Posts Extraction
+    # -----------------------------
+    def _fetch_recent_posts(self, linkedin_url: str, limit: int = 2) -> List[Dict[str, Any]]:
+        """
+        Uses Apify posts actor: apimaestro~linkedin-batch-profile-posts-scraper
+        Returns latest posts sorted by timestamp desc.
+        """
         try:
-            response = requests.post(endpoint, headers=headers, json=payload, timeout=30)
-            
-            if response.status_code == 201:
-                return response.json()["data"]["id"]
-            else:
-                print(f"API Error: {response.status_code} - {response.text}")
-                return None
-                
+            endpoint = f"{self.base_url}/acts/{self.posts_actor}/run-sync-get-dataset-items?token={self.api_key}"
+
+            payload = {
+                "includeEmail": False,
+                "usernames": [linkedin_url.strip()]  # MUST be list
+            }
+
+            headers = {"Content-Type": "application/json"}
+
+            resp = requests.post(endpoint, json=payload, headers=headers, timeout=120)
+
+            if resp.status_code not in (200, 201):
+                if self.debug:
+                    print("Posts actor failed:", resp.status_code, resp.text[:300])
+                return []
+
+            data = resp.json()
+
+            if not isinstance(data, list):
+                return []
+
+            def get_ts(post):
+                try:
+                    return int(post.get("posted_at", {}).get("timestamp", 0))
+                except:
+                    return 0
+
+            # Sort latest first
+            data = sorted(data, key=get_ts, reverse=True)
+
+            return data[:limit]
+
         except Exception as e:
-            print(f"Start run error: {e}")
+            if self.debug:
+                print("Posts extraction error:", str(e))
+            return []
+
+    # -----------------------------
+    # Activity Days Calculation
+    # -----------------------------
+    def _compute_activity_days(self, posts: List[Dict[str, Any]]) -> Optional[int]:
+        """
+        Returns number of days since most recent post.
+        If no posts or no timestamp -> None
+        """
+        if not posts:
             return None
-    
-    def _extract_username(self, url: str) -> Optional[str]:
-        """Extract username from LinkedIn URL."""
-        if '/in/' in url:
-            parts = url.split('/in/')
-            if len(parts) > 1:
-                username = parts[1].split('/')[0].split('?')[0]
-                return username.strip()
-        return None
-    
-    def _wait_for_results(self, run_id: str, timeout: int = 180) -> Optional[Dict]:
-        """Wait for Apify run to complete and get results."""
-        start_time = time.time()
-        
-        while time.time() - start_time < timeout:
-            status = self._check_status(run_id)
-            
-            if status == "SUCCEEDED":
-                return self._get_results(run_id)
-            elif status in ["FAILED", "TIMED_OUT", "ABORTED"]:
-                return None
-            
-            time.sleep(5)
-        
-        return None
-    
-    def _check_status(self, run_id: str) -> str:
-        """Check run status."""
-        endpoint = f"{self.base_url}/actor-runs/{run_id}"
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        
+
+        ts = posts[0].get("posted_at", {}).get("timestamp")
+        if not ts:
+            return None
+
         try:
-            response = requests.get(endpoint, headers=headers, timeout=10)
-            if response.status_code == 200:
-                return response.json()["data"]["status"]
+            post_dt = datetime.fromtimestamp(int(ts) / 1000)
+            delta_days = (datetime.now() - post_dt).days
+            return max(0, int(delta_days))
         except:
-            pass
-        
-        return "UNKNOWN"
-    
-    def _get_results(self, run_id: str) -> Optional[Dict]:
-        """Get dataset items from completed run."""
-        # Get run details first
-        run_endpoint = f"{self.base_url}/actor-runs/{run_id}"
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        
-        try:
-            run_response = requests.get(run_endpoint, headers=headers, timeout=10)
-            if run_response.status_code == 200:
-                run_data = run_response.json()["data"]
-                dataset_id = run_data.get("defaultDatasetId")
-                
-                if dataset_id:
-                    dataset_endpoint = f"{self.base_url}/datasets/{dataset_id}/items"
-                    dataset_response = requests.get(dataset_endpoint, headers=headers, timeout=10)
-                    
-                    if dataset_response.status_code == 200:
-                        items = dataset_response.json()
-                        if items and len(items) > 0:
-                            return items[0]
-        
-        except Exception as e:
-            print(f"Get results error: {e}")
-        
-        return None
+            return None
