@@ -235,11 +235,13 @@ class DynamicLeadScoringApp:
             st.markdown("#### Feature Building")
             progress_bar.progress(75)
 
-            features = self.feature_builder.build_features(
-                linkedin_data=self.session_state.raw_linkedin_data,
-                company_data=self.session_state.raw_company_data,
-                user_data=self.session_state.user_input_data
-            )
+            features, debug_info = self.feature_builder.build_features(
+    linkedin_data=self.session_state.raw_linkedin_data,
+    company_data=self.session_state.raw_company_data,
+    user_data=self.session_state.user_input_data
+)
+
+            self.session_state.debug_info = debug_info
 
             if features is None:
                 st.error("Feature building failed")
@@ -322,7 +324,15 @@ class DynamicLeadScoringApp:
         """Render scoring section."""
         if not self.session_state.ready_for_scoring:
             return
+        st.markdown("### DEBUG: Values Assigned Before Sending to Model")
 
+        if "debug_info" in self.session_state and self.session_state.debug_info:
+            debug_df = pd.DataFrame(
+        list(self.session_state.debug_info.items()),
+        columns=["Field", "Value"]
+    )
+            st.dataframe(debug_df, use_container_width=True)
+        
         st.markdown("### Step 2: Generate Score")
 
         if st.button("Generate Lead Score", type="primary"):
