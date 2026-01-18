@@ -1,172 +1,136 @@
-import pandas as pd
 import numpy as np
-from typing import Dict, Optional
+import pandas as pd
 
 
 class DynamicFeatureBuilder:
-    """
-    Builds the same features used during training.
-    Output: single-row DataFrame with all required columns.
-    """
+    def __init__(self):
+        pass
 
-    def build_features(
-        self,
-        linkedin_data: Optional[Dict] = None,
-        company_data: Optional[Dict] = None,
-        user_data: Optional[Dict] = None,
-    ) -> pd.DataFrame:
+    def _safe_lower(self, x):
+        return str(x).lower().strip() if pd.notna(x) else ""
 
-        linkedin_data = linkedin_data or {}
-        company_data = company_data or {}
-        user_data = user_data or {}
+    def _parse_size_to_number(self, size_str):
+        if pd.isna(size_str) or size_str is None:
+            return 0
 
-        # -----------------------------
-        # Extract Designation (title)
-        # -----------------------------
-        title = ""
-        experience = linkedin_data.get("experience", [])
+        s = str(size_str).lower().strip()
+        s = s.replace("employees", "").replace("employee", "").strip()
 
-        if isinstance(experience, list) and len(experience) > 0:
-            current = None
-            for e in experience:
-                if isinstance(e, dict) and e.get("is_current") is True:
-                    current = e
-                    break
-            if current is None:
-                current = experience[0] if isinstance(experience[0], dict) else {}
-            title = str(current.get("title", "")).lower().strip()
+        if "-" in s:
+            parts = s.split("-")
+            try:
+                a = float(parts[0].strip())
+                b = float(parts[1].strip())
+                return int((a + b) / 2)
+            except Exception:
+                return 0
 
-        # fallback manual title
-        if not title and user_data.get("designation"):
-            title = str(user_data.get("designation")).lower().strip()
-
-        # -----------------------------
-        # Company Size
-        # -----------------------------
-        size_str = ""
-        if company_data.get("size"):
-            size_str = str(company_data["size"])
-        elif user_data.get("company_size"):
-            size_str = str(user_data["company_size"])
-
-        # -----------------------------
-        # Revenue
-        # -----------------------------
-        revenue_str = ""
-        if company_data.get("revenue"):
-            revenue_str = str(company_data["revenue"])
-        elif user_data.get("annual_revenue"):
-            revenue_str = str(user_data["annual_revenue"])
-
-        # -----------------------------
-        # Industry
-        # -----------------------------
-        industry_str = ""
-        if company_data.get("industry"):
-            industry_str = str(company_data["industry"]).lower().strip()
-        elif user_data.get("industry"):
-            industry_str = str(user_data["industry"]).lower().strip()
-
-        # -----------------------------
-        # LinkedIn Activity (days)
-        # -----------------------------
-        activity_days = None
-        if linkedin_data.get("activity_days") is not None:
-            activity_days = linkedin_data.get("activity_days")
-
-        if activity_days is None:
-            activity_days = user_data.get("activity_days")
+        if "+" in s:
+            try:
+                return int(float(s.replace("+", "").strip()))
+            except Exception:
+                return 0
 
         try:
-            activity_days = float(activity_days)
-        except:
-            activity_days = 999.0
+            return int(float(s))
+        except Exception:
+            return 0
 
-        activity_days = float(np.clip(activity_days, 0, 180))
+    def _parse_revenue_millions(self, x):
+        if pd.isna(x) or x is None:
+            return 0.0
 
-        # -----------------------------
-        # Helper functions
-        # -----------------------------
-        def has_any(txt: str, keywords):
-            return 1 if any(k in txt for k in keywords) else 0
+        s = str(x).upper().replace(",", "").replace("$", "").strip()
 
-        def parse_size_to_number(size_str_in: str) -> int:
-            if not size_str_in:
-                return 0
-            s = str(size_str_in).lower().replace("employees", "").strip()
+        # FIX: handle Million/Billion text
+        s = s.replace("MILLION", "M").replace("BILLION", "B")
+        s = s.replace("MN", "M").replace("BN", "B")
 
-            if "-" in s:
-                try:
-                    a, b = s.split("-")[0], s.split("-")[1]
-                    return int((float(a) + float(b)) / 2)
-                except:
-                    return 0
+        try:
+            if "B" in s:
+                return float(s.replace("B", "").strip()) * 1000
+            if "M" in s:
+                return float(s.replace("M", "").strip())
+            return float(s)
+        except Exception:
+            return 0.0
 
-            if "+" in s:
-                try:
-                    return int(float(s.replace("+", "")))
-                except:
-                    return 0
+    def build_features(self, linkedin_data: dict, company_data: dict = None, user_data: dict = None) -> pd.DataFrame:
+        """
+        Returns a single-row DataFrame matching trained model feature columns.
+        """
+        if user_data is None:
+            user_data = {}
 
-            try:
-                return int(float(s))
-            except:
-                return 0
+        # ---- Extract title/designation ----
+        title = ""
+        industry = ""
 
-        def parse_revenue_millions(x):
-            if not x:
-                return 0.0
-            s = str(x).upper().replace(",", "").replace("$", "").strip()
-            try:
-                if "B" in s:
-                    return float(s.replace("B", "")) * 1000
-                if "M" in s:
-                    return float(s.replace("M", ""))
-                return float(s)
-            except:
-                return 0.0
+        if linkedin_data:
+            basic = linkedin_data.get("basic_info", {})
+            headline = basic.get("headline", "")
+            title = headline or ""
 
-        # -----------------------------
-        # Core feature creation
-        # -----------------------------
-        designation_length = len(title)
-        designation_word_count = len(title.split()) if title else 0
+            # if current experience exists, prefer it
+            exp = linkedin_data.get("experience", [])
+            if isinstance(exp, list) and len(exp) > 0:
+                for e in exp:
+                    if e.get("is_current", False) and e.get("title"):
+                        title = e.get("title")
+                        break
 
-        is_ceo = has_any(title, ["ceo", "chief executive", "president"])
-        is_c_level = has_any(title, ["chief", "cto", "cfo", "cio", "cro", "cmo"])
-        is_evp_svp = has_any(title, ["evp", "svp", "executive vice president", "senior vice president"])
-        is_vp = has_any(title, ["vice president", "vp", "v.p."])
-        is_director = has_any(title, ["director", "head of"])
-        is_manager = has_any(title, ["manager", "lead", "supervisor"])
-        is_officer = has_any(title, ["officer", "avp", "assistant vice president"])
+        # ---- Manual company fields (only 4) ----
+        company_name = user_data.get("company_name", "")
+        company_size = user_data.get("company_size", "")
+        annual_revenue = user_data.get("annual_revenue", "")
+        industry = user_data.get("industry", industry)
 
-        in_lending = has_any(title, ["lend", "mortgage", "loan", "credit"])
-        in_tech = has_any(title, ["tech", "technology", "it", "digital", "data", "analytics", "ai", "software"])
-        in_operations = has_any(title, ["operat", "process", "delivery", "service", "support"])
-        in_risk = has_any(title, ["risk", "compliance", "security", "audit"])
-        in_finance = has_any(title, ["finance", "fpa", "treasury"])
-        in_strategy = has_any(title, ["strategy", "transformation", "innovation", "growth"])
+        # ---- Normalize text ----
+        title_l = self._safe_lower(title)
+        industry_l = self._safe_lower(industry)
 
+        # ---- Seniority flags ----
+        is_ceo = int(any(k in title_l for k in ["ceo", "chief executive", "president"]))
+        is_c_level = int(any(k in title_l for k in ["chief", "cto", "cfo", "cio", "cro", "cmo"]))
+        is_evp_svp = int(any(k in title_l for k in ["evp", "svp", "executive vice president", "senior vice president"]))
+        is_vp = int(any(k in title_l for k in ["vice president", "vp", "v.p."]))
+        is_director = int(any(k in title_l for k in ["director", "head of"]))
+        is_manager = int(any(k in title_l for k in ["manager", "lead", "supervisor"]))
+        is_officer = int(any(k in title_l for k in ["officer", "avp", "assistant vice president"]))
+
+        # ---- Department flags ----
+        in_lending = int(any(k in title_l for k in ["lend", "mortgage", "loan", "credit", "origination", "abl"]))
+        in_tech = int(any(k in title_l for k in ["tech", "technology", "it", "digital", "data", "analytics", "ai", "software"]))
+        in_operations = int(any(k in title_l for k in ["operat", "process", "delivery", "service", "support"]))
+        in_risk = int(any(k in title_l for k in ["risk", "compliance", "security", "audit"]))
+        in_finance = int(any(k in title_l for k in ["finance", "fpa", "treasury", "cfo"]))
+        in_strategy = int(any(k in title_l for k in ["strategy", "transformation", "innovation", "growth"]))
+
+        designation_length = len(title_l)
+        designation_word_count = len(title_l.split()) if title_l else 0
+
+        # ---- Compute dynamic scores (used by your model) ----
         seniority_score = (
-            is_ceo * 5 +
-            is_c_level * 4 +
-            is_evp_svp * 3 +
-            is_vp * 2 +
+            is_ceo * 6 +
+            is_c_level * 5 +
+            is_evp_svp * 4 +
+            is_vp * 3 +
             is_director * 2 +
             is_manager * 1 +
-            is_officer * 1
+            is_officer * 2
         )
 
         dept_score = (
-            in_lending * 2 +
+            in_lending * 3 +
             in_finance * 2 +
-            in_risk * 2 +
+            in_risk * 1 +
             in_strategy * 1 +
-            in_operations * 1 +
-            in_tech * 1
+            in_tech * 1 +
+            in_operations * 1
         )
 
-        size_numeric = parse_size_to_number(size_str)
+        # ---- Company size ----
+        size_numeric = self._parse_size_to_number(company_size)
 
         size_51_200 = int(51 <= size_numeric <= 200)
         size_201_500 = int(201 <= size_numeric <= 500)
@@ -174,45 +138,47 @@ class DynamicFeatureBuilder:
         size_1001_5000 = int(1001 <= size_numeric <= 5000)
         size_5000_plus = int(size_numeric >= 5000)
 
-        revenue_millions = float(parse_revenue_millions(revenue_str))
+        # ---- Revenue ----
+        revenue_millions = self._parse_revenue_millions(annual_revenue)
 
-        # Revenue category must be STRING here (deployment encoder will convert to int)
+        # revenue category mapping (must be numeric for model)
         if revenue_millions < 20:
-            revenue_category = "<20M"
+            revenue_category = 0
         elif revenue_millions < 50:
-            revenue_category = "20-50M"
+            revenue_category = 1
         elif revenue_millions < 100:
-            revenue_category = "50-100M"
+            revenue_category = 2
         elif revenue_millions < 500:
-            revenue_category = "100-500M"
+            revenue_category = 3
         else:
-            revenue_category = "500M+"
+            revenue_category = 4
 
+        # ---- Activity Days ----
+        activity_days = None
+        if linkedin_data:
+            activity_days = linkedin_data.get("activity_days", None)
+
+        try:
+            activity_days = float(activity_days)
+        except Exception:
+            activity_days = np.nan
+
+        if np.isnan(activity_days):
+            activity_days = 30.0  # neutral fallback (not worst-case)
+
+        activity_days = float(np.clip(activity_days, 0, 180))
         is_active_week = int(activity_days <= 7)
         is_active_month = int(activity_days <= 30)
 
-        is_consumer_lending = int(any(k in industry_str for k in ["consumer lending", "consumer finance", "mortgage lending"]))
-        is_commercial_banking = int(any(k in industry_str for k in ["commercial", "business banking", "corporate banking"]))
-        is_retail_banking = int(any(k in industry_str for k in ["retail", "personal banking"]))
-        is_fintech = int(any(k in industry_str for k in ["fintech", "financial technology", "digital banking"]))
-        is_credit_union = int(any(k in industry_str for k in ["credit union", "cooperative"]))
+        # ---- Industry flags ----
+        is_consumer_lending = int("consumer" in industry_l and "lend" in industry_l)
+        is_commercial_banking = int("commercial" in industry_l or "corporate banking" in industry_l)
+        is_retail_banking = int("retail" in industry_l or "personal banking" in industry_l)
+        is_fintech = int("fintech" in industry_l or "digital bank" in industry_l)
+        is_credit_union = int("credit union" in industry_l or "cooperative" in industry_l)
 
-        # -----------------------------
-        # Score columns (from API/user if available)
-        # If missing -> 0 (safe)
-        # -----------------------------
-        def safe_float(v):
-            try:
-                return float(v)
-            except:
-                return 0.0
-
-        Desig_Score = safe_float(user_data.get("Desig_Score", 0))
-        Size_Score = safe_float(user_data.get("Size_Score", 0))
-        Revenue_Score = safe_float(user_data.get("Revenue_Score", 0))
-        Activity_Score = safe_float(user_data.get("Activity_Score", 0))
-
-        features = {
+        # ---- Final feature row (MUST match model columns) ----
+        row = {
             "is_ceo": is_ceo,
             "is_c_level": is_c_level,
             "is_evp_svp": is_evp_svp,
@@ -237,7 +203,7 @@ class DynamicFeatureBuilder:
             "size_1001_5000": size_1001_5000,
             "size_5000_plus": size_5000_plus,
             "revenue_millions": float(revenue_millions),
-            "revenue_category": str(revenue_category),
+            "revenue_category": int(revenue_category),
             "activity_days": float(activity_days),
             "is_active_week": is_active_week,
             "is_active_month": is_active_month,
@@ -246,10 +212,6 @@ class DynamicFeatureBuilder:
             "is_retail_banking": is_retail_banking,
             "is_fintech": is_fintech,
             "is_credit_union": is_credit_union,
-            "Desig_Score": float(Desig_Score),
-            "Size_Score": float(Size_Score),
-            "Revenue_Score": float(Revenue_Score),
-            "Activity_Score": float(Activity_Score),
         }
 
-        return pd.DataFrame([features])
+        return pd.DataFrame([row])
