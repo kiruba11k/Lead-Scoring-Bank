@@ -55,40 +55,42 @@ class DynamicFeatureBuilder:
         except Exception:
             return 0.0
 
-    def build_features(self, linkedin_data: dict, company_data: dict = None, user_data: dict = None) -> pd.DataFrame:
+    def build_features(self, linkedin_data: dict, company_data: dict = None, user_data: dict = None):
         """
-        Returns a single-row DataFrame matching trained model feature columns.
+        Returns:
+            df_features (pd.DataFrame): single-row dataframe for model prediction
+            debug_info (dict): all raw + engineered feature values (for debugging)
         """
         if user_data is None:
             user_data = {}
-
+    
         # ---- Extract title/designation ----
         title = ""
         industry = ""
-
+    
         if linkedin_data:
             basic = linkedin_data.get("basic_info", {})
             headline = basic.get("headline", "")
             title = headline or ""
-
-            # if current experience exists, prefer it
+    
+            # Prefer current experience title if available
             exp = linkedin_data.get("experience", [])
             if isinstance(exp, list) and len(exp) > 0:
                 for e in exp:
                     if e.get("is_current", False) and e.get("title"):
                         title = e.get("title")
                         break
-
+                    
         # ---- Manual company fields (only 4) ----
         company_name = user_data.get("company_name", "")
         company_size = user_data.get("company_size", "")
         annual_revenue = user_data.get("annual_revenue", "")
         industry = user_data.get("industry", industry)
-
+    
         # ---- Normalize text ----
         title_l = self._safe_lower(title)
         industry_l = self._safe_lower(industry)
-
+    
         # ---- Seniority flags ----
         is_ceo = int(any(k in title_l for k in ["ceo", "chief executive", "president"]))
         is_c_level = int(any(k in title_l for k in ["chief", "cto", "cfo", "cio", "cro", "cmo"]))
@@ -97,7 +99,7 @@ class DynamicFeatureBuilder:
         is_director = int(any(k in title_l for k in ["director", "head of"]))
         is_manager = int(any(k in title_l for k in ["manager", "lead", "supervisor"]))
         is_officer = int(any(k in title_l for k in ["officer", "avp", "assistant vice president"]))
-
+    
         # ---- Department flags ----
         in_lending = int(any(k in title_l for k in ["lend", "mortgage", "loan", "credit", "origination", "abl"]))
         in_tech = int(any(k in title_l for k in ["tech", "technology", "it", "digital", "data", "analytics", "ai", "software"]))
@@ -105,11 +107,11 @@ class DynamicFeatureBuilder:
         in_risk = int(any(k in title_l for k in ["risk", "compliance", "security", "audit"]))
         in_finance = int(any(k in title_l for k in ["finance", "fpa", "treasury", "cfo"]))
         in_strategy = int(any(k in title_l for k in ["strategy", "transformation", "innovation", "growth"]))
-
+    
         designation_length = len(title_l)
         designation_word_count = len(title_l.split()) if title_l else 0
-
-        # ---- Compute dynamic scores (used by your model) ----
+    
+        # ---- Compute dynamic scores ----
         seniority_score = (
             is_ceo * 6 +
             is_c_level * 5 +
@@ -119,7 +121,7 @@ class DynamicFeatureBuilder:
             is_manager * 1 +
             is_officer * 2
         )
-
+    
         dept_score = (
             in_lending * 3 +
             in_finance * 2 +
@@ -128,20 +130,20 @@ class DynamicFeatureBuilder:
             in_tech * 1 +
             in_operations * 1
         )
-
+    
         # ---- Company size ----
         size_numeric = self._parse_size_to_number(company_size)
-
+    
         size_51_200 = int(51 <= size_numeric <= 200)
         size_201_500 = int(201 <= size_numeric <= 500)
         size_501_1000 = int(501 <= size_numeric <= 1000)
         size_1001_5000 = int(1001 <= size_numeric <= 5000)
         size_5000_plus = int(size_numeric >= 5000)
-
+    
         # ---- Revenue ----
         revenue_millions = self._parse_revenue_millions(annual_revenue)
-
-        # revenue category mapping (must be numeric for model)
+    
+        # Revenue category numeric
         if revenue_millions < 20:
             revenue_category = 0
         elif revenue_millions < 50:
@@ -152,32 +154,32 @@ class DynamicFeatureBuilder:
             revenue_category = 3
         else:
             revenue_category = 4
-
+    
         # ---- Activity Days ----
         activity_days = None
         if linkedin_data:
             activity_days = linkedin_data.get("activity_days", None)
-
+    
         try:
             activity_days = float(activity_days)
         except Exception:
             activity_days = np.nan
-
+    
         if np.isnan(activity_days):
-            activity_days = 30.0  # neutral fallback (not worst-case)
-
+            activity_days = 30.0  # neutral fallback
+    
         activity_days = float(np.clip(activity_days, 0, 180))
         is_active_week = int(activity_days <= 7)
         is_active_month = int(activity_days <= 30)
-
+    
         # ---- Industry flags ----
         is_consumer_lending = int("consumer" in industry_l and "lend" in industry_l)
-        is_commercial_banking = int("commercial" in industry_l or "corporate banking" in industry_l)
-        is_retail_banking = int("retail" in industry_l or "personal banking" in industry_l)
-        is_fintech = int("fintech" in industry_l or "digital bank" in industry_l)
-        is_credit_union = int("credit union" in industry_l or "cooperative" in industry_l)
-
-        # ---- Final feature row (MUST match model columns) ----
+        is_commercial_banking = int(("commercial" in industry_l) or ("corporate banking" in industry_l))
+        is_retail_banking = int(("retail" in industry_l) or ("personal banking" in industry_l))
+        is_fintech = int(("fintech" in industry_l) or ("digital bank" in industry_l))
+        is_credit_union = int(("credit union" in industry_l) or ("cooperative" in industry_l))
+    
+        # ---- Final feature row ----
         row = {
             "is_ceo": is_ceo,
             "is_c_level": is_c_level,
@@ -213,20 +215,24 @@ class DynamicFeatureBuilder:
             "is_fintech": is_fintech,
             "is_credit_union": is_credit_union,
         }
-
-        
+    
+        # Create df for model
+        df = pd.DataFrame([row])
+    
+        # ---- Debug info ----
         debug_info = {
-    "title": title,
-    "company_name": company_name,
-    "company_size_raw": company_size,
-    "annual_revenue_raw": revenue_str,
-    "industry_raw": industry,
-    "activity_days": activity_days,
-}
-
-# Add every model feature value into debug_info
+            "title": title,
+            "company_name": company_name,
+            "company_size_raw": company_size,
+            "annual_revenue_raw": annual_revenue,
+            "industry_raw": industry,
+            "activity_days_raw": linkedin_data.get("activity_days") if linkedin_data else None,
+            "activity_days_final_used": activity_days,
+        }
+    
+        # Add every feature value
         for col in df.columns:
             debug_info[col] = df.iloc[0][col]
-
-        
-        return pd.DataFrame([row]),debug_info
+    
+        return df, debug_info
+    
