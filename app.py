@@ -135,41 +135,27 @@ class DynamicLeadScoringApp:
             st.divider()
 
             # Manual override section
+            # Manual override section (ONLY COMPANY FIELDS)
             st.markdown("### Manual Data Entry")
-            st.info("Use if APIs fail to extract required data")
+            st.info("Use only if Company API fails. LinkedIn fields will still come from Apify.")
 
-            manual_override = st.checkbox("Enable manual data entry")
+            manual_override = st.checkbox("Enable manual company data entry")
 
             if manual_override:
-                with st.form("manual_data_form"):
-                    st.text_input("Prospect Designation", key="manual_designation")
+                with st.form("manual_company_form"):
                     st.text_input("Company Name", key="manual_company")
-                    st.text_input("Company Size", key="manual_size")
-                    st.text_input("Annual Revenue", key="manual_revenue")
-                    st.text_input("Industry", key="manual_industry")
+                    st.text_input("Company Size", key="manual_size", placeholder="51-200 / 201-500 / 5000+")
+                    st.text_input("Annual Revenue", key="manual_revenue", placeholder="50M / 1B / 120")
+                    st.text_input("Industry", key="manual_industry", placeholder="Banking / Fintech")
 
-                    st.number_input("LinkedIn Activity Days (0-180)", min_value=0, max_value=180, value=60, key="manual_activity_days")
-
-                    st.markdown("#### Optional Score Inputs (Best Accuracy)")
-                    st.number_input("Desig_Score", value=0.0, key="manual_desig_score")
-                    st.number_input("Size_Score", value=0.0, key="manual_size_score")
-                    st.number_input("Revenue_Score", value=0.0, key="manual_revenue_score")
-                    st.number_input("Activity_Score", value=0.0, key="manual_activity_score")
-
-                    if st.form_submit_button("Save Manual Data"):
+                    if st.form_submit_button("Save Manual Company Data"):
                         self.session_state.user_input_data = {
-                            "designation": st.session_state.manual_designation,
-                            "company_name": st.session_state.manual_company,
-                            "company_size": st.session_state.manual_size,
-                            "annual_revenue": st.session_state.manual_revenue,
-                            "industry": st.session_state.manual_industry,
-                            "activity_days": st.session_state.manual_activity_days,
-                            "Desig_Score": st.session_state.manual_desig_score,
-                            "Size_Score": st.session_state.manual_size_score,
-                            "Revenue_Score": st.session_state.manual_revenue_score,
-                            "Activity_Score": st.session_state.manual_activity_score,
-                        }
-                        st.success("Manual data saved")
+                "company_name": st.session_state.manual_company,
+                "company_size": st.session_state.manual_size,
+                "annual_revenue": st.session_state.manual_revenue,
+                "industry": st.session_state.manual_industry,
+            }
+                        st.success("Manual company data saved")
 
     def render_input_section(self):
         """Render LinkedIn URL input and extraction."""
