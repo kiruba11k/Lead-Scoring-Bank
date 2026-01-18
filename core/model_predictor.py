@@ -1,120 +1,86 @@
+import os
 import json
 import joblib
 import numpy as np
 import pandas as pd
-import shap
-from pathlib import Path
 
 
 class ModelPredictor:
-    def __init__(self, model_path="models/model.pkl", metadata_path="models/metadata.json"):
-        self.model_path = model_path
-        self.metadata_path = metadata_path
-        self.model = None
-        self.metadata = None
-        self._load()
+    def __init__(self):
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        models_dir = os.path.join(base_dir, "..", "models")
 
-    def _load(self):
-        if Path(self.model_path).exists():
-            self.model = joblib.load(self.model_path)
+        self.model_path = os.path.join(models_dir, "model.pkl")
+        self.metadata_path = os.path.join(models_dir, "metadata.json")
 
-        if Path(self.metadata_path).exists():
-            with open(self.metadata_path, "r") as f:
-                self.metadata = json.load(f)
+        if not os.path.exists(self.model_path):
+            raise FileNotFoundError(f"Model file not found: {self.model_path}")
 
-    def _ensure_feature_order(self, df: pd.DataFrame) -> pd.DataFrame:
-        if not self.metadata:
-            return df
+        if not os.path.exists(self.metadata_path):
+            raise FileNotFoundError(f"Metadata file not found: {self.metadata_path}")
 
-        expected = self.metadata.get("feature_names", [])
-        if not expected:
-            return df
+        self.model = joblib.load(self.model_path)
 
-        # Add missing columns with 0
-        for col in expected:
-            if col not in df.columns:
-                df[col] = 0
+        with open(self.metadata_path, "r") as f:
+            self.metadata = json.load(f)
 
-        # Drop extra columns
-        df = df[expected]
-        return df
+        self.feature_names = self.metadata.get("feature_names", [])
+        self.reverse_mapping = self.metadata.get("reverse_mapping", {})
 
-    def explain_prediction(self, X_row: pd.DataFrame, top_n: int = 6) -> list:
+        if not self.feature_names:
+            raise ValueError("feature_names missing in metadata.json")
+
+    def _align_features(self, features: pd.DataFrame) -> pd.DataFrame:
         """
-        SHAP explanation for predicted class.
-        Returns list of top contributing features.
+        Ensures incoming features match training feature order exactly.
+        Missing columns filled with 0.
+        Extra columns removed.
         """
-        try:
-            explainer = shap.TreeExplainer(self.model)
-            shap_values = explainer.shap_values(X_row)
+        if isinstance(features, dict):
+            features = pd.DataFrame([features])
 
-            pred_class = int(self.model.predict(X_row)[0])
+        # Ensure all expected columns exist
+        for col in self.feature_names:
+            if col not in features.columns:
+                features[col] = 0
 
-            # Multi-class: shap_values is list
-            class_shap = shap_values[pred_class][0]
+        # Remove extra columns
+        features = features[self.feature_names]
 
-            feature_names = list(X_row.columns)
-            feature_vals = X_row.iloc[0].to_dict()
+        # Convert everything numeric safely
+        features = features.apply(pd.to_numeric, errors="coerce").fillna(0)
 
-            contributions = []
-            for i, f in enumerate(feature_names):
-                contributions.append({
-                    "feature": f,
-                    "value": feature_vals.get(f),
-                    "impact": float(class_shap[i])
-                })
+        return features
 
-            contributions = sorted(contributions, key=lambda x: abs(x["impact"]), reverse=True)
-            return contributions[:top_n]
+    def predict(self, features):
+        """
+        Predict priority class + confidence + probability distribution
+        """
+        X = self._align_features(features)
 
-        except Exception:
-            return []
+        probs = self.model.predict_proba(X)[0]
+        pred_class = int(np.argmax(probs))
 
-    def predict(self, features_df: pd.DataFrame) -> dict:
-        if self.model is None:
-            return None
+        priority = self.reverse_mapping.get(str(pred_class), self.reverse_mapping.get(pred_class, "UNKNOWN"))
+        confidence = float(np.max(probs))
 
-        features_df = self._ensure_feature_order(features_df)
-
-        proba = self.model.predict_proba(features_df)[0]
-        pred_class = int(np.argmax(proba))
-
-        reverse_mapping = None
-        if self.metadata:
-            reverse_mapping = self.metadata.get("reverse_mapping")
-
-        if reverse_mapping:
-            priority = reverse_mapping.get(str(pred_class), reverse_mapping.get(pred_class, "UNKNOWN"))
-        else:
-            mapping = {0: "COLD", 1: "COOL", 2: "WARM", 3: "HOT"}
-            priority = mapping.get(pred_class, "UNKNOWN")
-
-        probabilities = {
-            "COLD": float(proba[0]),
-            "COOL": float(proba[1]),
-            "WARM": float(proba[2]),
-            "HOT": float(proba[3]),
-        }
-
-        confidence = float(np.max(proba))
-
-        reasons = self.explain_prediction(features_df, top_n=6)
+        labels = ["COLD", "COOL", "WARM", "HOT"]
+        prob_dict = {labels[i]: float(probs[i]) for i in range(len(labels))}
 
         return {
             "priority": priority,
             "confidence": confidence,
-            "probabilities": probabilities,
-            "reasons": reasons
+            "probabilities": prob_dict
         }
 
-    def get_feature_importance(self) -> dict:
+    def get_feature_importance(self):
         """
-        Optional: returns model feature importance if available.
+        Return feature importance in descending order (if available)
         """
         try:
-            booster = self.model.get_booster()
-            score = booster.get_score(importance_type="gain")
-            sorted_score = dict(sorted(score.items(), key=lambda x: x[1], reverse=True))
-            return sorted_score
+            importance = self.model.feature_importances_
+            imp_dict = dict(zip(self.feature_names, importance))
+            imp_dict = dict(sorted(imp_dict.items(), key=lambda x: x[1], reverse=True))
+            return imp_dict
         except Exception:
             return {}
