@@ -214,4 +214,19 @@ class DynamicFeatureBuilder:
             "is_credit_union": is_credit_union,
         }
 
-        return pd.DataFrame([row])
+        
+        debug_info = {
+    "title": title,
+    "company_name": company_name,
+    "company_size_raw": company_size,
+    "annual_revenue_raw": revenue_str,
+    "industry_raw": industry,
+    "activity_days": activity_days,
+}
+
+# Add every model feature value into debug_info
+        for col in df.columns:
+            debug_info[col] = df.iloc[0][col]
+
+        
+        return pd.DataFrame([row]),debug_info
