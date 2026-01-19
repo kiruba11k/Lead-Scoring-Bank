@@ -69,6 +69,9 @@ class DynamicFeatureBuilder:
             features_df (pd.DataFrame) -> 1 row model features
             debug_info (dict) -> raw + computed values
         """
+        if isinstance(linkedin_data, list) and len(linkedin_data) > 0:
+            linkedin_data = linkedin_data[0]
+            
         if user_data is None:
             user_data = {}
 
