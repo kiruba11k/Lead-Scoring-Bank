@@ -32,21 +32,23 @@ class LinkedInAPIExtractor:
 
     def extract_profile(self, linkedin_url: str):
         """
-        Extract profile + recent posts + activity_days
-        Returns dict
+    Extract profile + recent posts + activity_days
+    Always returns dict
         """
-        if isinstance(profile_data, list) and len(profile_data) > 0:
-            profile_data = profile_data[0]
-            username = self._extract_username(linkedin_url)
-            
+
+        username = self._extract_username(linkedin_url)
         if not username:
-            return None
+        return None
 
         profile_data = self._run_profile_actor(username)
         if not profile_data:
             return None
 
-        # Attach posts + activity_days
+    # ✅ If Apify returns list, convert to dict first
+        if isinstance(profile_data, list) and len(profile_data) > 0:
+            profile_data = profile_data[0]
+
+    # Attach posts + activity_days
         posts = self.extract_recent_posts(linkedin_url, limit=2)
         activity_days = self.compute_activity_days_from_posts(posts)
 
@@ -54,6 +56,7 @@ class LinkedInAPIExtractor:
         profile_data["activity_days"] = activity_days
 
         return profile_data
+
 
     def _run_profile_actor(self, username: str, timeout: int = 180):
         """
