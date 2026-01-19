@@ -6,8 +6,8 @@ import numpy as np
 
 class ModelPredictor:
     def __init__(self):
-        self.model_path = "models/banking_scoring_model_20260118_132024.pkl"
-        self.meta_path = "models/banking_scoring_model_20260118_132024_metadata.json"
+        self.model_path = "models/model.pkl"
+        self.meta_path = "models/metadata.json"
 
         self.model = None
         self.metadata = None
