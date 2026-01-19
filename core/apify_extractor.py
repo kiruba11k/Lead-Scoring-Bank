@@ -1,194 +1,102 @@
-"""
-Apify Extractor
-- Extract LinkedIn profile data
-- Extract recent posts
-- Compute activity_days from most recent post timestamp
-"""
-
-import requests
 import time
-from datetime import datetime, timedelta
+import requests
 
 
 class LinkedInAPIExtractor:
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.base_url = "https://api.apify.com/v2"
-        self.profile_actor = "apimaestro~linkedin-profile-detail"
-        self.posts_actor = "apimaestro~linkedin-batch-profile-posts-scraper"
-
-    def _extract_username(self, linkedin_url: str):
-        if not linkedin_url:
-            return None
-
-        url = linkedin_url.strip()
-
-        # handle formats like https://www.linkedin.com/in/abc/
-        if "linkedin.com/in/" not in url:
-            return None
-
-        username = url.split("linkedin.com/in/")[1].split("/")[0].split("?")[0].strip()
-        return username if username else None
+        self.actor_id = "apimaestro~linkedin-profile-detail"
 
     def extract_profile(self, linkedin_url: str):
-        """
-    Extract profile + recent posts + activity_days
-    Always returns dict
-        """
-
         username = self._extract_username(linkedin_url)
         if not username:
-        return None
-
-        profile_data = self._run_profile_actor(username)
-        if not profile_data:
             return None
 
-    # ✅ If Apify returns list, convert to dict first
+        run_id = self._start_run(username)
+        if not run_id:
+            return None
+
+        profile_data = self._poll_and_fetch(run_id)
+
         if isinstance(profile_data, list) and len(profile_data) > 0:
             profile_data = profile_data[0]
 
-    # Attach posts + activity_days
-        posts = self.extract_recent_posts(linkedin_url, limit=2)
-        activity_days = self.compute_activity_days_from_posts(posts)
-
-        profile_data["recent_posts"] = posts
-        profile_data["activity_days"] = activity_days
-
         return profile_data
 
+    def _extract_username(self, url: str):
+        if not url:
+            return None
+        url = url.strip()
+        if "linkedin.com/in/" in url:
+            return url.split("linkedin.com/in/")[1].split("/")[0].split("?")[0]
+        return None
 
-    def _run_profile_actor(self, username: str, timeout: int = 180):
-        """
-        Run Apify actor async, poll until finished, return dataset first item
-        """
-        endpoint = f"{self.base_url}/acts/{self.profile_actor}/runs"
+    def _start_run(self, username: str):
+        endpoint = f"{self.base_url}/acts/{self.actor_id}/runs"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
+            "Content-Type": "application/json"
         }
         payload = {"username": username, "includeEmail": False}
 
         try:
-            res = requests.post(endpoint, headers=headers, json=payload, timeout=30)
-            if res.status_code != 201:
-                return None
-
-            run_id = res.json()["data"]["id"]
-            dataset_id = res.json()["data"]["defaultDatasetId"]
-
-            # Poll status
-            start = time.time()
-            while time.time() - start < timeout:
-                status = self._check_run_status(run_id)
-                if status == "SUCCEEDED":
-                    return self._fetch_dataset_items(dataset_id)
-                if status in ["FAILED", "ABORTED", "TIMED_OUT"]:
-                    return None
-                time.sleep(4)
-
+            r = requests.post(endpoint, headers=headers, json=payload, timeout=30)
+            if r.status_code == 201:
+                return r.json()["data"]["id"]
+        except:
             return None
-
-        except Exception:
-            return None
-
-    def _check_run_status(self, run_id: str):
-        try:
-            endpoint = f"{self.base_url}/actor-runs/{run_id}"
-            headers = {"Authorization": f"Bearer {self.api_key}"}
-            res = requests.get(endpoint, headers=headers, timeout=10)
-            if res.status_code == 200:
-                return res.json()["data"]["status"]
-        except Exception:
-            pass
-        return "UNKNOWN"
-
-    def _fetch_dataset_items(self, dataset_id: str):
-        try:
-            endpoint = f"{self.base_url}/datasets/{dataset_id}/items"
-            headers = {"Authorization": f"Bearer {self.api_key}"}
-            res = requests.get(endpoint, headers=headers, timeout=20)
-            if res.status_code == 200:
-                items = res.json()
-                if isinstance(items, list) and len(items) > 0:
-                    return items[0]
-        except Exception:
-            pass
         return None
 
-    # ---------------- POSTS ---------------- #
+    def _poll_and_fetch(self, run_id: str, timeout: int = 180):
+        start = time.time()
 
-    def extract_recent_posts(self, profile_url: str, limit: int = 2):
-        """
-        Scrape posts, filter last 30 days, return latest `limit`
-        """
-        try:
-            endpoint = (
-                f"{self.base_url}/acts/{self.posts_actor}/"
-                f"run-sync-get-dataset-items?token={self.api_key}"
-            )
+        while time.time() - start < timeout:
+            status = self._check_status(run_id)
 
-            payload = {
-                "includeEmail": False,
-                "usernames": [profile_url.strip()],
-            }
+            if status == "SUCCEEDED":
+                return self._fetch_dataset(run_id)
 
-            headers = {"Content-Type": "application/json"}
+            if status in ["FAILED", "TIMED_OUT", "ABORTED"]:
+                return None
 
-            response = requests.post(endpoint, json=payload, headers=headers, timeout=90)
+            time.sleep(4)
 
-            if response.status_code not in (200, 201):
-                return []
+        return None
 
-            data = response.json()
-            if not isinstance(data, list):
-                return []
-
-            thirty_days_ago = datetime.now() - timedelta(days=30)
-            filtered_posts = []
-
-            for post in data:
-                if not isinstance(post, dict):
-                    continue
-
-                # ✅ correct key mapping
-                ts = post.get("posted_at", {}).get("timestamp")
-                if not ts:
-                    continue
-
-                try:
-                    post_dt = datetime.fromtimestamp(int(ts) / 1000)
-                    if post_dt >= thirty_days_ago:
-                        filtered_posts.append(post)
-                except Exception:
-                    continue
-
-            # sort most recent first
-            filtered_posts = sorted(
-                filtered_posts,
-                key=lambda x: x.get("posted_at", {}).get("timestamp", 0),
-                reverse=True,
-            )
-
-            return filtered_posts[:limit]
-
-        except Exception:
-            return []
-
-    def compute_activity_days_from_posts(self, posts: list):
-        """
-        Compute activity days from most recent post timestamp.
-        """
-        if not posts:
-            return None
-
-        ts = posts[0].get("posted_at", {}).get("timestamp")
-        if not ts:
-            return None
+    def _check_status(self, run_id: str):
+        endpoint = f"{self.base_url}/actor-runs/{run_id}"
+        headers = {"Authorization": f"Bearer {self.api_key}"}
 
         try:
-            post_dt = datetime.fromtimestamp(int(ts) / 1000)
-            days = (datetime.now() - post_dt).days
-            return max(0, int(days))
-        except Exception:
+            r = requests.get(endpoint, headers=headers, timeout=10)
+            if r.status_code == 200:
+                return r.json()["data"]["status"]
+        except:
+            return "UNKNOWN"
+        return "UNKNOWN"
+
+    def _fetch_dataset(self, run_id: str):
+        run_endpoint = f"{self.base_url}/actor-runs/{run_id}"
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+
+        try:
+            run_res = requests.get(run_endpoint, headers=headers, timeout=10)
+            if run_res.status_code != 200:
+                return None
+
+            dataset_id = run_res.json()["data"]["defaultDatasetId"]
+            dataset_endpoint = f"{self.base_url}/datasets/{dataset_id}/items"
+
+            ds_res = requests.get(dataset_endpoint, headers=headers, timeout=15)
+            if ds_res.status_code != 200:
+                return None
+
+            items = ds_res.json()
+            if isinstance(items, list) and len(items) > 0:
+                return items[0]
+
+            return items
+
+        except:
             return None
