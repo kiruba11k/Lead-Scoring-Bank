@@ -1,0 +1,63 @@
+{
+  "created_at": "2026-01-19T17:11:19.200379",
+  "label_mapping": {
+    "COLD": 0,
+    "COOL": 1,
+    "WARM": 2,
+    "HOT": 3
+  },
+  "reverse_mapping": {
+    "0": "COLD",
+    "1": "COOL",
+    "2": "WARM",
+    "3": "HOT"
+  },
+  "feature_names": [
+    "is_ceo",
+    "is_c_level",
+    "is_evp_svp",
+    "is_vp",
+    "is_director",
+    "is_manager",
+    "is_officer",
+    "in_lending",
+    "in_tech",
+    "in_operations",
+    "in_risk",
+    "in_finance",
+    "in_strategy",
+    "designation_length",
+    "designation_word_count",
+    "seniority_score",
+    "dept_score",
+    "size_numeric",
+    "size_51_200",
+    "size_201_500",
+    "size_501_1000",
+    "size_1001_5000",
+    "size_5000_plus",
+    "revenue_millions",
+    "revenue_category",
+    "activity_missing",
+    "activity_days",
+    "is_active_week",
+    "is_active_month",
+    "is_consumer_lending",
+    "is_commercial_banking",
+    "is_retail_banking",
+    "is_fintech",
+    "is_credit_union",
+    "Desig_Score",
+    "Size_Score",
+    "Revenue_Score",
+    "Activity_Score"
+  ],
+  "revenue_encoder_classes": [
+    "100-500M",
+    "<20M"
+  ],
+  "metrics": {
+    "accuracy": 0.9703703703703703,
+    "macro_f1": 0.9750000000000001
+  }
+}
