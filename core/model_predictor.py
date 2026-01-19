@@ -3,6 +3,7 @@ Model Predictor
 - Loads model.pkl + metadata.json
 - Ensures features match trained order
 - Converts all values to numeric before predict_proba
+- Supports feature importance extraction (if model has feature_importances_)
 """
 
 import json
@@ -69,7 +70,8 @@ class ModelPredictor:
 
     def get_feature_importance(self):
         """
-        Returns dict(feature_name -> importance)
+        Returns dict(feature_name -> importance) sorted descending.
+        Works only if model has feature_importances_ (Tree models).
         """
         if self.model is None or self.metadata is None:
             return None
@@ -78,7 +80,10 @@ class ModelPredictor:
             return None
 
         feature_names = self.metadata.get("feature_names", [])
-        importances = self.model.feature_importances_
+        importances = getattr(self.model, "feature_importances_", None)
+
+        if importances is None:
+            return None
 
         if len(feature_names) != len(importances):
             return None
