@@ -1,10 +1,16 @@
-import os
+"""
+Model Predictor
+- Loads model.pkl + metadata.json
+- Ensures features match trained order
+- Converts all values to numeric before predict_proba
+"""
+
 import json
-import pickle
+import joblib
 import numpy as np
 import pandas as pd
-from datetime import datetime
-from typing import Optional, Dict
+import os
+
 
 class ModelPredictor:
     def __init__(self, model_path="models/model.pkl", metadata_path="models/metadata.json"):
@@ -15,22 +21,14 @@ class ModelPredictor:
         self._load()
 
     def _load(self):
-        if not os.path.exists(self.model_path):
-            return
-        if not os.path.exists(self.metadata_path):
-            return
+        if os.path.exists(self.model_path):
+            self.model = joblib.load(self.model_path)
 
-        try:
-            with open(self.model_path, "rb") as f:
-                self.model = pickle.load(f)
-
+        if os.path.exists(self.metadata_path):
             with open(self.metadata_path, "r") as f:
                 self.metadata = json.load(f)
-        except Exception:
-            self.model = None
-            self.metadata = None
-            
-    def predict(self, features_df):
+
+    def predict(self, features_df: pd.DataFrame):
         if self.model is None or self.metadata is None:
             return None
 
@@ -40,20 +38,22 @@ class ModelPredictor:
         if not feature_names:
             return None
 
-        # Ensure all columns exist
+        # Ensure all required columns exist
         for col in feature_names:
             if col not in features_df.columns:
                 features_df[col] = 0
 
-        # IMPORTANT: reorder exactly as trained model
+        # Reorder exactly as training
         X = features_df[feature_names].copy()
 
-        # Convert all to numeric safely
+        # Force numeric
         for c in X.columns:
             X[c] = pd.to_numeric(X[c], errors="coerce").fillna(0)
 
+        # Predict probabilities
         probs = self.model.predict_proba(X)[0]
         pred_class = int(np.argmax(probs))
+
         label = reverse_mapping.get(str(pred_class), "UNKNOWN")
 
         prob_map = {}
@@ -67,4 +67,23 @@ class ModelPredictor:
             "probabilities": prob_map,
         }
 
-    
+    def get_feature_importance(self):
+        """
+        Returns dict(feature_name -> importance)
+        """
+        if self.model is None or self.metadata is None:
+            return None
+
+        if not hasattr(self.model, "feature_importances_"):
+            return None
+
+        feature_names = self.metadata.get("feature_names", [])
+        importances = self.model.feature_importances_
+
+        if len(feature_names) != len(importances):
+            return None
+
+        pairs = list(zip(feature_names, importances))
+        pairs = sorted(pairs, key=lambda x: x[1], reverse=True)
+
+        return {k: float(v) for k, v in pairs}
