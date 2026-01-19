@@ -35,7 +35,10 @@ class LinkedInAPIExtractor:
         Extract profile + recent posts + activity_days
         Returns dict
         """
-        username = self._extract_username(linkedin_url)
+        if isinstance(profile_data, list) and len(profile_data) > 0:
+            profile_data = profile_data[0]
+            username = self._extract_username(linkedin_url)
+            
         if not username:
             return None
 
