@@ -35,7 +35,12 @@ class DynamicFeatureBuilder:
             return int(float(s))
         except Exception:
             return 0
+    import re
 
+    def has_word(text, pattern):
+    
+        return bool(re.search(pattern, text))
+        
     def _parse_revenue_millions(self, x):
         if pd.isna(x) or x is None:
             return 0.0
@@ -92,10 +97,11 @@ class DynamicFeatureBuilder:
         industry_l = self._safe_lower(industry)
     
         # ---- Seniority flags ----
-        is_ceo = int(any(k in title_l for k in ["ceo", "chief executive", "president"]))
-        is_c_level = int(any(k in title_l for k in ["chief", "cto", "cfo", "cio", "cro", "cmo"]))
-        is_evp_svp = int(any(k in title_l for k in ["evp", "svp", "executive vice president", "senior vice president"]))
-        is_vp = int(any(k in title_l for k in ["vice president", "vp", "v.p."]))
+        is_ceo = int(has_word(title_l, r"\bceo\b") or has_word(title_l, r"\bchief executive\b"))
+        is_c_level = int(has_word(title_l, r"\b(cto|cfo|cio|cro|cmo)\b") or has_word(title_l, r"\bchief\b"))
+        is_evp_svp = int(has_word(title_l, r"\b(evp|svp)\b") or has_word(title_l, r"\bexecutive vice president\b") or has_word(title_l, r"\bsenior vice president\b"))
+        is_vp = int(has_word(title_l, r"\bvice president\b") or has_word(title_l, r"\bvp\b") or has_word(title_l, r"\bv\.p\.\b"))
+
         is_director = int(any(k in title_l for k in ["director", "head of"]))
         is_manager = int(any(k in title_l for k in ["manager", "lead", "supervisor"]))
         is_officer = int(any(k in title_l for k in ["officer", "avp", "assistant vice president"]))
