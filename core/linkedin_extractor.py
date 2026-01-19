@@ -1,130 +1,62 @@
 """
-Apify LinkedIn Extractor (Profile + Recent Posts + Activity Days)
-
-This module:
-1) Extracts LinkedIn profile data using Apify actor
-2) Extracts recent posts using Apify posts actor
-3) Computes activity_days from most recent post timestamp
-4) Adds activity_days + recent_posts into profile response
+LinkedIn Extractor using Apify API
+- Extracts profile data
+- Extracts recent posts
+- Computes activity_days from most recent post timestamp
 """
 
+import time
 import requests
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, List
 
 
-class LinkedInAPIExtractor:
-    def __init__(self, api_key: str, debug: bool = False):
+class LinkedInProfileExtractor:
+    def __init__(self, api_key: str):
         self.api_key = api_key
-        self.debug = debug
-
-        # Actor IDs
-        self.profile_actor = "apimaestro~linkedin-profile-detail"
-        self.posts_actor = "apimaestro~linkedin-batch-profile-posts-scraper"
-
         self.base_url = "https://api.apify.com/v2"
+        self.profile_actor_id = "apimaestro~linkedin-profile-detail"
+        self.posts_actor_id = "apimaestro~linkedin-batch-profile-posts-scraper"
 
-    # -----------------------------
-    # Public Main Function
-    # -----------------------------
-    def extract_profile(self, linkedin_url: str, posts_limit: int = 2) -> Optional[Dict[str, Any]]:
-        """
-        Extract full LinkedIn profile + recent posts + activity_days
-        """
-        if not linkedin_url:
+    def extract_profile(self, linkedin_url: str) -> Optional[Dict]:
+        username = self._extract_username(linkedin_url)
+        if not username:
             return None
 
-        profile_data = self._fetch_profile_detail(linkedin_url)
-        if not profile_data:
+        run_id = self._start_apify_run(username)
+        if not run_id:
             return None
 
-        # Extract recent posts
-        recent_posts = self._fetch_recent_posts(linkedin_url, limit=posts_limit)
+        profile = self._get_apify_results(run_id)
+        if not profile:
+            return None
 
-        # Compute activity_days from posts
-        activity_days = self._compute_activity_days(recent_posts)
+        # Extract posts + compute activity
+        posts = self.extract_recent_posts(linkedin_url, limit=2)
+        activity_days = self.compute_activity_days_from_posts(posts)
 
-        # Attach to profile output (dynamic)
-        profile_data["recent_posts"] = recent_posts
-        profile_data["activity_days"] = activity_days if activity_days is not None else None
+        profile["recent_posts"] = posts
+        profile["activity_days"] = activity_days
 
-        if self.debug:
-            print("\n=========== DEBUG: Apify Extractor ===========")
-            print("LinkedIn URL:", linkedin_url)
-            print("Posts fetched:", len(recent_posts))
-            print("Computed activity_days:", activity_days)
-            print("============================================\n")
+        return profile
 
-        return profile_data
-
-    # -----------------------------
-    # Profile Detail Extraction
-    # -----------------------------
-    def _fetch_profile_detail(self, linkedin_url: str) -> Optional[Dict[str, Any]]:
-        """
-        Uses Apify profile actor: apimaestro~linkedin-profile-detail
-        """
+    def extract_recent_posts(self, profile_url: str, limit: int = 2) -> List[Dict]:
         try:
-            endpoint = f"{self.base_url}/acts/{self.profile_actor}/run-sync-get-dataset-items?token={self.api_key}"
-
-            payload = {
-                "username": linkedin_url.strip(),
-                "includeEmail": False
-            }
-
-            headers = {"Content-Type": "application/json"}
-
-            resp = requests.post(endpoint, json=payload, headers=headers, timeout=120)
-
-            if resp.status_code not in (200, 201):
-                if self.debug:
-                    print("Profile actor failed:", resp.status_code, resp.text[:300])
-                return None
-
-            data = resp.json()
-
-            # Apify returns list of items
-            if isinstance(data, list) and len(data) > 0:
-                return data[0]
-
-            # Some actors return dict
-            if isinstance(data, dict):
-                return data
-
-            return None
-
-        except Exception as e:
-            if self.debug:
-                print("Profile extraction error:", str(e))
-            return None
-
-    # -----------------------------
-    # Posts Extraction
-    # -----------------------------
-    def _fetch_recent_posts(self, linkedin_url: str, limit: int = 2) -> List[Dict[str, Any]]:
-        """
-        Uses Apify posts actor: apimaestro~linkedin-batch-profile-posts-scraper
-        Returns latest posts sorted by timestamp desc.
-        """
-        try:
-            endpoint = f"{self.base_url}/acts/{self.posts_actor}/run-sync-get-dataset-items?token={self.api_key}"
+            endpoint = (
+                f"{self.base_url}/acts/{self.posts_actor_id}/run-sync-get-dataset-items"
+                f"?token={self.api_key}"
+            )
 
             payload = {
                 "includeEmail": False,
-                "usernames": [linkedin_url.strip()]  # MUST be list
+                "usernames": [profile_url.strip()]
             }
 
-            headers = {"Content-Type": "application/json"}
-
-            resp = requests.post(endpoint, json=payload, headers=headers, timeout=120)
-
-            if resp.status_code not in (200, 201):
-                if self.debug:
-                    print("Posts actor failed:", resp.status_code, resp.text[:300])
+            response = requests.post(endpoint, json=payload, timeout=90)
+            if response.status_code not in (200, 201):
                 return []
 
-            data = resp.json()
-
+            data = response.json()
             if not isinstance(data, list):
                 return []
 
@@ -134,24 +66,13 @@ class LinkedInAPIExtractor:
                 except:
                     return 0
 
-            # Sort latest first
             data = sorted(data, key=get_ts, reverse=True)
-
             return data[:limit]
 
-        except Exception as e:
-            if self.debug:
-                print("Posts extraction error:", str(e))
+        except:
             return []
 
-    # -----------------------------
-    # Activity Days Calculation
-    # -----------------------------
-    def _compute_activity_days(self, posts: List[Dict[str, Any]]) -> Optional[int]:
-        """
-        Returns number of days since most recent post.
-        If no posts or no timestamp -> None
-        """
+    def compute_activity_days_from_posts(self, posts: List[Dict]) -> Optional[int]:
         if not posts:
             return None
 
@@ -161,7 +82,85 @@ class LinkedInAPIExtractor:
 
         try:
             post_dt = datetime.fromtimestamp(int(ts) / 1000)
-            delta_days = (datetime.now() - post_dt).days
-            return max(0, int(delta_days))
+            return max(0, int((datetime.now() - post_dt).days))
         except:
             return None
+
+    def _extract_username(self, url: str) -> Optional[str]:
+        url = url.strip()
+
+        if "linkedin.com/in/" in url:
+            return url.split("linkedin.com/in/")[1].split("/")[0].split("?")[0]
+
+        return None
+
+    def _start_apify_run(self, username: str) -> Optional[str]:
+        endpoint = f"{self.base_url}/acts/{self.profile_actor_id}/runs"
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {"username": username, "includeEmail": False}
+
+        try:
+            response = requests.post(endpoint, headers=headers, json=payload, timeout=30)
+            if response.status_code == 201:
+                return response.json()["data"]["id"]
+        except:
+            pass
+
+        return None
+
+    def _get_apify_results(self, run_id: str, timeout: int = 180) -> Optional[Dict]:
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            status = self._check_run_status(run_id)
+
+            if status == "SUCCEEDED":
+                return self._fetch_dataset_items(run_id)
+            elif status in ["FAILED", "TIMED_OUT", "ABORTED"]:
+                return None
+
+            time.sleep(4)
+
+        return None
+
+    def _check_run_status(self, run_id: str) -> str:
+        endpoint = f"{self.base_url}/actor-runs/{run_id}"
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+
+        try:
+            response = requests.get(endpoint, headers=headers, timeout=10)
+            if response.status_code == 200:
+                return response.json()["data"]["status"]
+        except:
+            pass
+
+        return "UNKNOWN"
+
+    def _fetch_dataset_items(self, run_id: str) -> Optional[Dict]:
+        run_endpoint = f"{self.base_url}/actor-runs/{run_id}"
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+
+        try:
+            run_response = requests.get(run_endpoint, headers=headers, timeout=10)
+            if run_response.status_code != 200:
+                return None
+
+            dataset_id = run_response.json()["data"]["defaultDatasetId"]
+
+            dataset_endpoint = f"{self.base_url}/datasets/{dataset_id}/items"
+            dataset_response = requests.get(dataset_endpoint, headers=headers, timeout=10)
+
+            if dataset_response.status_code == 200:
+                items = dataset_response.json()
+                if items and len(items) > 0:
+                    return items[0]
+
+        except:
+            return None
+
+        return None
