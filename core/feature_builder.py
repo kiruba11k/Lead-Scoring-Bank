@@ -241,5 +241,6 @@ class DynamicFeatureBuilder:
 
         for col in df.columns:
             debug_info[col] = df.iloc[0][col]
+            
 
         return df, debug_info
