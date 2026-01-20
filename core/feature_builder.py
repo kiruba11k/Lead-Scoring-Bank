@@ -1,42 +1,50 @@
+"""
+Dynamic Feature Builder - MUST match model feature names from metadata.json
+Returns:
+- features_df: DataFrame (1 row)
+- debug_info: dict (raw + final values)
+"""
+
 import pandas as pd
 import numpy as np
+import re
+from typing import Dict, Optional, Tuple
 
 
 class DynamicFeatureBuilder:
-    def __init__(self):
-        pass
-
-    def _safe_lower(self, x):
+    def _safe_lower(self, x) -> str:
         return str(x).lower().strip() if x is not None else ""
 
-    def _parse_size_to_number(self, size_str):
+    def _parse_size_to_number(self, size_str: str) -> int:
         if not size_str:
             return 0
 
-        s = str(size_str).lower().replace("employees", "").strip()
-
-        # handle commas: 5,001-10,000 employees
+        s = str(size_str).lower().replace("employees", "").replace("employee", "").strip()
         s = s.replace(",", "")
 
+        # 5,001-10,000 employees
         if "-" in s:
             try:
                 a, b = s.split("-")[0].strip(), s.split("-")[1].strip()
-                return int((float(a) + float(b)) / 2)
-            except Exception:
+                a = float(a.replace("k", "000"))
+                b = float(b.replace("k", "000"))
+                return int((a + b) / 2)
+            except:
                 return 0
 
+        # 10,000+ employees
         if "+" in s:
             try:
-                return int(float(s.replace("+", "")))
-            except Exception:
+                return int(float(s.replace("+", "").replace("k", "000")))
+            except:
                 return 0
 
         try:
             return int(float(s))
-        except Exception:
+        except:
             return 0
 
-    def _parse_revenue_millions(self, revenue_str):
+    def _parse_revenue_millions(self, revenue_str: str) -> float:
         if not revenue_str:
             return 0.0
 
@@ -44,80 +52,32 @@ class DynamicFeatureBuilder:
 
         try:
             if "B" in s:
-                return float(s.replace("B", "")) * 1000
+                return float(s.replace("B", "").strip()) * 1000
             if "M" in s:
-                return float(s.replace("M", ""))
+                return float(s.replace("M", "").strip())
             return float(s)
-        except Exception:
+        except:
             return 0.0
 
-    def _activity_score(self, activity_days):
+    def build_features(
+        self,
+        linkedin_data: dict,
+        company_data: dict = None,   # NOT USED (manual only)
+        user_data: dict = None
+    ) -> Tuple[pd.DataFrame, Dict]:
         """
-        Dynamic scoring for Activity_Score
-        Lower days => higher score
-        """
-        if activity_days is None or np.isnan(activity_days):
-            return 4  # neutral
-
-        d = float(activity_days)
-
-        if d <= 7:
-            return 5
-        elif d <= 30:
-            return 4
-        elif d <= 90:
-            return 3
-        elif d <= 180:
-            return 2
-        return 1
-
-    def _revenue_score(self, revenue_millions):
-        if revenue_millions >= 1000:
-            return 5
-        if revenue_millions >= 500:
-            return 5
-        if revenue_millions >= 100:
-            return 4
-        if revenue_millions >= 50:
-            return 3
-        if revenue_millions >= 20:
-            return 2
-        return 1
-
-    def _size_score(self, size_numeric):
-        if size_numeric >= 5000:
-            return 5
-        if size_numeric >= 1001:
-            return 4
-        if size_numeric >= 501:
-            return 3
-        if size_numeric >= 201:
-            return 2
-        if size_numeric >= 51:
-            return 1
-        return 0
-
-    def _desig_score(self, seniority_score, dept_score):
-        # simple dynamic score
-        score = seniority_score + dept_score
-        return int(np.clip(score, 0, 25))
-
-    def build_features(self, linkedin_data: dict, company_data: dict = None, user_data: dict = None):
-        """
-        Returns:
-            features_df, debug_info
+        Returns: (features_df, debug_info)
         """
         if user_data is None:
             user_data = {}
 
-        # ---- Extract title/designation ----
+        # --------------------
+        # Extract Title
+        # --------------------
         title = ""
-        industry_from_linkedin = ""
-
         if linkedin_data:
             basic = linkedin_data.get("basic_info", {})
-            headline = basic.get("headline", "")
-            title = headline or ""
+            title = basic.get("headline", "") or ""
 
             exp = linkedin_data.get("experience", [])
             if isinstance(exp, list) and len(exp) > 0:
@@ -126,26 +86,34 @@ class DynamicFeatureBuilder:
                         title = e.get("title")
                         break
 
-        # ---- Manual company fields (only 4) ----
-        company_name = user_data.get("company_name", "")
-        company_size = user_data.get("company_size", "")
-        annual_revenue = user_data.get("annual_revenue", "")
-        industry = user_data.get("industry", industry_from_linkedin)
+        # --------------------
+        # Manual Company Inputs (ONLY 4)
+        # --------------------
+        company_name = user_data.get("company_name", "") or ""
+        company_size = user_data.get("company_size", "") or ""
+        annual_revenue = user_data.get("annual_revenue", "") or ""
+        industry = user_data.get("industry", "") or ""
 
-        # ---- Normalize text ----
+        # --------------------
+        # Normalize
+        # --------------------
         title_l = self._safe_lower(title)
         industry_l = self._safe_lower(industry)
 
-        # ---- Seniority flags ----
+        # --------------------
+        # Seniority flags
+        # --------------------
         is_ceo = int(any(k in title_l for k in ["ceo", "chief executive", "president"]))
         is_c_level = int(any(k in title_l for k in ["chief", "cto", "cfo", "cio", "cro", "cmo"]))
         is_evp_svp = int(any(k in title_l for k in ["evp", "svp", "executive vice president", "senior vice president"]))
-        is_vp = int(any(k in title_l for k in ["vice president", "vp", "v.p."]))
+        is_vp = int(any(k in title_l for k in ["vice president", " vp", "v.p."]))
         is_director = int(any(k in title_l for k in ["director", "head of"]))
         is_manager = int(any(k in title_l for k in ["manager", "lead", "supervisor"]))
         is_officer = int(any(k in title_l for k in ["officer", "avp", "assistant vice president"]))
 
-        # ---- Department flags ----
+        # --------------------
+        # Department flags
+        # --------------------
         in_lending = int(any(k in title_l for k in ["lend", "mortgage", "loan", "credit", "origination", "abl"]))
         in_tech = int(any(k in title_l for k in ["tech", "technology", "it", "digital", "data", "analytics", "ai", "software"]))
         in_operations = int(any(k in title_l for k in ["operat", "process", "delivery", "service", "support"]))
@@ -153,41 +121,47 @@ class DynamicFeatureBuilder:
         in_finance = int(any(k in title_l for k in ["finance", "fpa", "treasury", "cfo"]))
         in_strategy = int(any(k in title_l for k in ["strategy", "transformation", "innovation", "growth"]))
 
-        designation_length = len(title_l)
-        designation_word_count = len(title_l.split()) if title_l else 0
+        designation_length = int(len(title_l))
+        designation_word_count = int(len(title_l.split())) if title_l else 0
 
-        # ---- Compute dynamic scores ----
+        # --------------------
+        # Scores (same style as training)
+        # --------------------
         seniority_score = (
-            is_ceo * 6 +
-            is_c_level * 5 +
-            is_evp_svp * 4 +
-            is_vp * 3 +
+            is_ceo * 5 +
+            is_c_level * 4 +
+            is_evp_svp * 3 +
+            is_vp * 2 +
             is_director * 2 +
             is_manager * 1 +
-            is_officer * 2
+            is_officer * 1
         )
 
         dept_score = (
-            in_lending * 3 +
+            in_lending * 2 +
             in_finance * 2 +
-            in_risk * 1 +
+            in_risk * 2 +
             in_strategy * 1 +
-            in_tech * 1 +
-            in_operations * 1
+            in_operations * 1 +
+            in_tech * 1
         )
 
-        # ---- Company size ----
+        # --------------------
+        # Size
+        # --------------------
         size_numeric = self._parse_size_to_number(company_size)
-
         size_51_200 = int(51 <= size_numeric <= 200)
         size_201_500 = int(201 <= size_numeric <= 500)
         size_501_1000 = int(501 <= size_numeric <= 1000)
         size_1001_5000 = int(1001 <= size_numeric <= 5000)
         size_5000_plus = int(size_numeric >= 5000)
 
-        # ---- Revenue ----
-        revenue_millions = self._parse_revenue_millions(annual_revenue)
+        # --------------------
+        # Revenue
+        # --------------------
+        revenue_millions = float(self._parse_revenue_millions(annual_revenue))
 
+        # Revenue category (numeric bucket like your training)
         if revenue_millions < 20:
             revenue_category = 0
         elif revenue_millions < 50:
@@ -199,40 +173,54 @@ class DynamicFeatureBuilder:
         else:
             revenue_category = 4
 
-        # ---- Activity ----
+        # --------------------
+        # Activity Days (dynamic from extractor posts)
+        # --------------------
         activity_days_raw = None
         if linkedin_data:
             activity_days_raw = linkedin_data.get("activity_days", None)
 
-        activity_missing = int(activity_days_raw is None)
+        # IMPORTANT:
+        # If no posts -> keep NaN (do NOT force 30)
+        try:
+            activity_days = float(activity_days_raw)
+        except:
+            activity_days = np.nan
 
-        # neutral fallback (but keep missing flag)
-        if activity_days_raw is None:
-            activity_days = 30.0
-        else:
-            try:
-                activity_days = float(activity_days_raw)
-            except Exception:
-                activity_days = 30.0
-                activity_missing = 1
+        # Clip only if we have a valid value
+        if not np.isnan(activity_days):
+            activity_days = float(np.clip(activity_days, 0, 180))
 
-        activity_days = float(np.clip(activity_days, 0, 180))
-        is_active_week = int(activity_days <= 7)
-        is_active_month = int(activity_days <= 30)
+        is_active_week = int((not np.isnan(activity_days)) and activity_days <= 7)
+        is_active_month = int((not np.isnan(activity_days)) and activity_days <= 30)
 
-        # ---- Industry flags ----
+        # --------------------
+        # Industry flags
+        # --------------------
         is_consumer_lending = int("consumer" in industry_l and "lend" in industry_l)
-        is_commercial_banking = int("commercial" in industry_l or "corporate banking" in industry_l or "banking" in industry_l)
-        is_retail_banking = int("retail" in industry_l or "personal banking" in industry_l)
-        is_fintech = int("fintech" in industry_l or "digital bank" in industry_l)
-        is_credit_union = int("credit union" in industry_l or "cooperative" in industry_l)
+        is_commercial_banking = int(("commercial" in industry_l) or ("corporate banking" in industry_l))
+        is_retail_banking = int(("retail" in industry_l) or ("personal banking" in industry_l))
+        is_fintech = int(("fintech" in industry_l) or ("digital bank" in industry_l) or ("digital banking" in industry_l))
+        is_credit_union = int(("credit union" in industry_l) or ("cooperative" in industry_l))
 
-        # ---- Score columns (your dataset features) ----
-        Activity_Score = self._activity_score(activity_days_raw)
-        Revenue_Score = self._revenue_score(revenue_millions)
-        Size_Score = self._size_score(size_numeric)
-        Desig_Score = self._desig_score(seniority_score, dept_score)
+        # --------------------
+        # Your engineered score columns (model expects them)
+        # --------------------
+        # These must be dynamic (not static)
+        Desig_Score = int(seniority_score + dept_score)
+        Size_Score = int(
+            1 * size_51_200 +
+            2 * size_201_500 +
+            3 * size_501_1000 +
+            4 * size_1001_5000 +
+            5 * size_5000_plus
+        )
+        Revenue_Score = int(revenue_category + 1)  # 1..5
+        Activity_Score = int(0 if np.isnan(activity_days) else (5 if activity_days <= 7 else 4 if activity_days <= 30 else 2))
 
+        # --------------------
+        # Final row
+        # --------------------
         row = {
             "is_ceo": is_ceo,
             "is_c_level": is_c_level,
@@ -241,48 +229,39 @@ class DynamicFeatureBuilder:
             "is_director": is_director,
             "is_manager": is_manager,
             "is_officer": is_officer,
-
             "in_lending": in_lending,
             "in_tech": in_tech,
             "in_operations": in_operations,
             "in_risk": in_risk,
             "in_finance": in_finance,
             "in_strategy": in_strategy,
-
-            "designation_length": int(designation_length),
-            "designation_word_count": int(designation_word_count),
-
+            "designation_length": designation_length,
+            "designation_word_count": designation_word_count,
             "seniority_score": int(seniority_score),
             "dept_score": int(dept_score),
-
             "size_numeric": int(size_numeric),
             "size_51_200": size_51_200,
             "size_201_500": size_201_500,
             "size_501_1000": size_501_1000,
             "size_1001_5000": size_1001_5000,
             "size_5000_plus": size_5000_plus,
-
-            "revenue_millions": float(revenue_millions),
+            "revenue_millions": revenue_millions,
             "revenue_category": int(revenue_category),
-
-            "activity_missing": int(activity_missing),
-            "activity_days": float(activity_days),
+            "activity_days": activity_days,
             "is_active_week": is_active_week,
             "is_active_month": is_active_month,
-
             "is_consumer_lending": is_consumer_lending,
             "is_commercial_banking": is_commercial_banking,
             "is_retail_banking": is_retail_banking,
             "is_fintech": is_fintech,
             "is_credit_union": is_credit_union,
-
-            "Desig_Score": int(Desig_Score),
-            "Size_Score": int(Size_Score),
-            "Revenue_Score": int(Revenue_Score),
-            "Activity_Score": int(Activity_Score),
+            "Desig_Score": Desig_Score,
+            "Size_Score": Size_Score,
+            "Revenue_Score": Revenue_Score,
+            "Activity_Score": Activity_Score,
         }
 
-        df = pd.DataFrame([row])
+        features_df = pd.DataFrame([row])
 
         debug_info = {
             "title": title,
@@ -292,10 +271,10 @@ class DynamicFeatureBuilder:
             "industry_raw": industry,
             "activity_days_raw": activity_days_raw,
             "activity_days_final_used": activity_days,
-            "activity_missing": activity_missing,
         }
 
-        for col in df.columns:
-            debug_info[col] = df.iloc[0][col]
+        # add every final feature
+        for col in features_df.columns:
+            debug_info[col] = features_df.iloc[0][col]
 
-        return df, debug_info
+        return features_df, debug_info
