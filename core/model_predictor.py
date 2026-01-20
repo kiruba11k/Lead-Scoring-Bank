@@ -1,11 +1,9 @@
 """
-Model Predictor for Lead Scoring (COLD / COOL / WARM / HOT)
-
-- Loads trained XGBoost model (model.pkl)
-- Loads metadata (metadata.json)
-- Ensures input features match model training feature_names exactly
-- Returns prediction + confidence + probability distribution
-- Provides dynamic "WHY predicted" using feature importance
+Model Predictor
+- Loads model.pkl + metadata.json
+- Ensures feature columns match exactly
+- Returns prediction + confidence + probabilities
+- Provides feature importance + explanation
 """
 
 import os
@@ -13,179 +11,128 @@ import json
 import joblib
 import numpy as np
 import pandas as pd
-from typing import Dict, Any, Tuple, List
+from typing import Dict, Optional
 
 
 class ModelPredictor:
-    def __init__(
-        self,
-        model_path: str = "models/model.pkl",
-        metadata_path: str = "models/metadata.json",
-    ):
+    def __init__(self, model_path: str = "models/model.pkl", meta_path: str = "models/metadata.json"):
         self.model_path = model_path
-        self.metadata_path = metadata_path
+        self.meta_path = meta_path
 
         self.model = None
         self.metadata = None
-        self.feature_names = []
-        self.reverse_mapping = {}
+        self.feature_names = None
+        self.reverse_mapping = None
 
-        self._load_all()
+        self._load()
 
-    # -----------------------------
-    # Load Model + Metadata
-    # -----------------------------
-    def _load_all(self):
+    def _load(self):
         if not os.path.exists(self.model_path):
-            raise FileNotFoundError(f"Model file not found: {self.model_path}")
+            raise FileNotFoundError(f"Model not found: {self.model_path}")
 
-        if not os.path.exists(self.metadata_path):
-            raise FileNotFoundError(f"Metadata file not found: {self.metadata_path}")
+        if not os.path.exists(self.meta_path):
+            raise FileNotFoundError(f"Metadata not found: {self.meta_path}")
 
         self.model = joblib.load(self.model_path)
 
-        with open(self.metadata_path, "r") as f:
+        with open(self.meta_path, "r") as f:
             self.metadata = json.load(f)
 
         self.feature_names = self.metadata.get("feature_names", [])
         self.reverse_mapping = self.metadata.get("reverse_mapping", {})
 
-        if not self.feature_names:
-            raise ValueError("metadata.json missing feature_names")
-
-        if not self.reverse_mapping:
-            raise ValueError("metadata.json missing reverse_mapping")
-
-    # -----------------------------
-    # Feature Alignment
-    # -----------------------------
-    def _align_features(self, X: pd.DataFrame) -> pd.DataFrame:
+    def _prepare_features(self, features_df: pd.DataFrame) -> pd.DataFrame:
         """
-        Align input DataFrame columns to match training feature order.
-        Missing columns -> filled with 0.
-        Extra columns -> removed.
+        Align features to metadata order.
+        Fill missing columns with 0.
+        Keep NaN activity_days -> replace with 999 (like training)
         """
-        X = X.copy()
+        X = features_df.copy()
 
-        # Add missing cols
+        # add missing columns
         for col in self.feature_names:
             if col not in X.columns:
                 X[col] = 0
 
-        # Keep only training columns in correct order
+        # keep only expected cols in correct order
         X = X[self.feature_names]
 
-        # Ensure numeric dtype
-        for col in X.columns:
-            X[col] = pd.to_numeric(X[col], errors="coerce").fillna(0)
+        # handle NaN activity_days like training (fill 999 then clip)
+        if "activity_days" in X.columns:
+            X["activity_days"] = pd.to_numeric(X["activity_days"], errors="coerce")
+            X["activity_days"] = X["activity_days"].fillna(999).clip(0, 180)
+
+            X["is_active_week"] = (X["activity_days"] <= 7).astype(int)
+            X["is_active_month"] = (X["activity_days"] <= 30).astype(int)
+
+        # ensure numeric
+        X = X.apply(pd.to_numeric, errors="coerce").fillna(0)
 
         return X
 
-    # -----------------------------
-    # Feature Importance / Explanation
-    # -----------------------------
-    def get_feature_importance(self) -> pd.DataFrame:
-        """
-        Returns global feature importance from XGBoost model.
-        """
-        if not hasattr(self.model, "feature_importances_"):
-            return pd.DataFrame(columns=["feature", "importance"])
-
-        importances = self.model.feature_importances_
-        df_imp = pd.DataFrame({
-            "feature": self.feature_names,
-            "importance": importances
-        }).sort_values("importance", ascending=False)
-
-        return df_imp
-
-    def explain_prediction(
-        self,
-        X_row: pd.DataFrame,
-        top_n: int = 6
-    ) -> pd.DataFrame:
-        """
-        Provide dynamic reasons based on:
-        - feature importance
-        - feature value in the input row
-        """
-        X_row = self._align_features(X_row)
-
-        imp_df = self.get_feature_importance()
-        if imp_df.empty:
-            return pd.DataFrame(columns=["feature", "value", "importance"])
-
-        # Merge with input values
-        values = X_row.iloc[0].to_dict()
-
-        imp_df["value"] = imp_df["feature"].map(values)
-
-        # Keep only features that actually contribute (importance > 0)
-        imp_df = imp_df[imp_df["importance"] > 0]
-
-        # Prefer features that have non-zero values
-        imp_df["abs_value"] = imp_df["value"].abs()
-        imp_df = imp_df.sort_values(
-            by=["importance", "abs_value"],
-            ascending=[False, False]
-        )
-
-        return imp_df[["feature", "value", "importance"]].head(top_n)
-
-    # -----------------------------
-    # Predict
-    # -----------------------------
-    def predict(
-        self,
-        X: pd.DataFrame,
-        return_debug: bool = True
-    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """
-        Predict lead label + confidence.
-        Returns:
-          result dict + debug dict
-        """
-        if X is None or len(X) == 0:
-            return {"error": "Empty input features"}, {}
-
-        # Align features exactly
-        X_aligned = self._align_features(X)
-
-        # Debug values BEFORE sending to model
-        debug_info = {}
-        if return_debug:
-            debug_info["features_before_model"] = X_aligned.iloc[0].to_dict()
-
-        # Predict probabilities
+    def predict(self, features_df: pd.DataFrame) -> Optional[Dict]:
         try:
-            probs = self.model.predict_proba(X_aligned)[0]
+            X = self._prepare_features(features_df)
+
+            probs = self.model.predict_proba(X)[0]
+            pred_idx = int(np.argmax(probs))
+            label = self.reverse_mapping.get(str(pred_idx), str(pred_idx))
+
+            confidence = float(np.max(probs))
+
+            # probabilities dict
+            prob_dict = {}
+            for idx, p in enumerate(probs):
+                lab = self.reverse_mapping.get(str(idx), str(idx))
+                prob_dict[lab] = float(p)
+
+            return {
+                "priority": label,
+                "confidence": confidence,
+                "probabilities": prob_dict
+            }
+
         except Exception as e:
-            return {"error": f"Model returned no prediction: {str(e)}"}, debug_info
+            print(f"Prediction error: {e}")
+            return None
 
-        pred_class = int(np.argmax(probs))
-        confidence = float(np.max(probs))
+    def get_feature_importance(self) -> Dict[str, float]:
+        """
+        Returns model feature importance (XGBoost).
+        """
+        if self.model is None:
+            return {}
 
-        # Convert class index -> label
-        pred_label = self.reverse_mapping.get(str(pred_class), "UNKNOWN")
+        if hasattr(self.model, "feature_importances_"):
+            imp = self.model.feature_importances_
+            importance_map = dict(zip(self.feature_names, imp))
+            # sort desc
+            importance_map = dict(sorted(importance_map.items(), key=lambda x: x[1], reverse=True))
+            return importance_map
 
-        # Probability distribution
-        prob_dist = {}
-        for class_idx, p in enumerate(probs):
-            label = self.reverse_mapping.get(str(class_idx), str(class_idx))
-            prob_dist[label] = float(p)
+        return {}
 
-        result = {
-            "priority": pred_label,
-            "confidence": round(confidence * 100, 2),
-            "score": round(confidence * 100),
-            "probability_distribution": prob_dist
+    def explain_prediction(self, features_df: pd.DataFrame, top_n: int = 5) -> Dict:
+        """
+        Dynamic explanation based on top feature importance * value.
+        """
+        X = self._prepare_features(features_df)
+        importance = self.get_feature_importance()
+
+        if not importance:
+            return {"top_reasons": []}
+
+        reasons = []
+        for feat, imp in list(importance.items())[:30]:
+            val = float(X.iloc[0][feat])
+            score = imp * abs(val)
+            reasons.append((feat, val, float(imp), float(score)))
+
+        reasons = sorted(reasons, key=lambda x: x[3], reverse=True)[:top_n]
+
+        return {
+            "top_reasons": [
+                {"feature": f, "value": v, "importance": imp, "impact_score": sc}
+                for f, v, imp, sc in reasons
+            ]
         }
-
-        # Explanation (WHY predicted)
-        try:
-            explanation_df = self.explain_prediction(X_aligned, top_n=6)
-            result["top_reasons"] = explanation_df.to_dict(orient="records")
-        except Exception:
-            result["top_reasons"] = []
-
-        return result, debug_info
